@@ -20,6 +20,8 @@
     <application
         android:label="BITTO"
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
@@ -27,6 +29,7 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity android:name=".SettingsActivity" android:exported="false"/>
         <service android:name=".BittoService" android:exported="false"
             android:foregroundServiceType="microphone"/>
         <service android:name=".BittoAccessibility" android:exported="true"

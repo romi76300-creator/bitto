@@ -44,6 +44,8 @@ import java.util.Locale
 class BittoService : Service() {
     companion object {
         @Volatile var running = false
+        @Volatile var state = 0
+        var onState: ((Int) -> Unit)? = null
     }
 
     private val h = Handler(Looper.getMainLooper())
@@ -101,6 +103,7 @@ class BittoService : Service() {
 
     override fun onDestroy() {
         running = false
+        setState(0)
         stopWake()
         try { sr?.destroy() } catch (e: Exception) {}
         tts?.shutdown()
@@ -131,7 +134,9 @@ class BittoService : Service() {
     }
 
     private fun say(emotion: String, text: String, done: () -> Unit) {
-        if (text.isBlank() || !Prefs.sp(this).getBoolean("cloudvoice", true) || Prefs.key(this).isBlank()) {
+        setState(4)
+        if (text.isBlank() || !Prefs.sp(this).getBoolean("cloudvoice", true) || Prefs.key(this).isBlank() ||
+            (Prefs.sp(this).getBoolean("fast", true) && text.length < 40 && !ttsCache.containsKey(emotion + "|" + text))) {
             sayLocal(emotion, text, done)
             return
         }
@@ -232,6 +237,7 @@ class BittoService : Service() {
     }
 
     private fun startWake() {
+        setState(1)
         val m = model ?: return
         stopWake()
         busy = false
@@ -284,6 +290,7 @@ class BittoService : Service() {
 
     // ---------- Command sunna ----------
     private fun listenOnce(result: (String?) -> Unit) {
+        setState(2)
         h.postDelayed({
             try {
                 if (!SpeechRecognizer.isRecognitionAvailable(this)) {
@@ -323,10 +330,11 @@ class BittoService : Service() {
             } catch (e: Exception) {
                 result(null)
             }
-        }, 400)
+        }, 150)
     }
 
     private fun handle(text: String) {
+        setState(3)
         history.put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", text))))
         Thread {
             val res = askGemini()
@@ -628,6 +636,11 @@ Aur extra types: alarm (value 24 ghante wale "HH:MM" me, message me reminder ka 
         } else {
             handle("[FAIL] " + what + " nahi hua. Screen par ye hai: " + acc.screenText() + " --- sahi naam se dobara try karo, ya kaam na ho paye to maafi maang lo (action none).")
         }
+    }
+
+    private fun setState(n: Int) {
+        state = n
+        h.post { onState?.invoke(n) }
     }
 
     private fun needAcc(next: () -> Unit) {
