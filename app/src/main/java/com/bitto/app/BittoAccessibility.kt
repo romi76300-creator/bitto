@@ -22,9 +22,16 @@ class BittoAccessibility : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        h.postDelayed({ ensureRunning() }, 5000)
     }
 
-    override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(e: AccessibilityEvent?) {
+        val now = System.currentTimeMillis()
+        if (now - lastCheck > 120000) {
+            lastCheck = now
+            ensureRunning()
+        }
+    }
 
     override fun onInterrupt() {}
 
@@ -84,7 +91,7 @@ class BittoAccessibility : AccessibilityService() {
 
     private fun firstEditable(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (n == null) return null
-        if (n.isEditable) return n
+        if (n.isEditable || n.className?.toString() == "android.widget.EditText") return n
         for (i in 0 until n.childCount) {
             val r = firstEditable(n.getChild(i))
             if (r != null) return r
@@ -98,7 +105,35 @@ class BittoAccessibility : AccessibilityService() {
         node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         val b = Bundle()
         b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)
+        if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)) return true
+        val cm = getSystemService(android.content.ClipboardManager::class.java)
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("bitto", text))
+        return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+    }
+
+    fun typeRetry(text: String, tries: Int, done: (Boolean) -> Unit) {
+        if (typeText(text)) {
+            done(true)
+            return
+        }
+        if (tries <= 0) {
+            done(false)
+            return
+        }
+        h.postDelayed({ typeRetry(text, tries - 1, done) }, 500)
+    }
+
+    private var lastCheck = 0L
+
+    private fun ensureRunning() {
+        try {
+            if (!Prefs.sp(this).getBoolean("auto", false) || BittoService.running) return
+            val i = Intent(this, MainActivity::class.java)
+            i.putExtra("auto", true)
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            startActivity(i)
+        } catch (e: Exception) {
+        }
     }
 
     fun submit(): Boolean {
@@ -116,9 +151,10 @@ class BittoAccessibility : AccessibilityService() {
         fun walk(n: AccessibilityNodeInfo?, d: Int) {
             if (n == null || sb.length > 1800 || d > 25) return
             val t = (n.text ?: n.contentDescription)?.toString()
-            if (!t.isNullOrBlank()) {
-                sb.append(t.take(60))
+            if (!t.isNullOrBlank() || n.isEditable) {
+                sb.append((t ?: "").take(60))
                 if (n.isClickable) sb.append(" [tap]")
+                if (n.isEditable) sb.append(" [edit]")
                 sb.append(" | ")
             }
             for (i in 0 until n.childCount) walk(n.getChild(i), d + 1)

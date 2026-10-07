@@ -42,6 +42,10 @@ import java.net.URL
 import java.util.Locale
 
 class BittoService : Service() {
+    companion object {
+        @Volatile var running = false
+    }
+
     private val h = Handler(Looper.getMainLooper())
     private var model: Model? = null
     private var ss: SpeechService? = null
@@ -65,6 +69,7 @@ class BittoService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        running = true
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("bitto", "BITTO", NotificationManager.IMPORTANCE_LOW))
         val n = Notification.Builder(this, "bitto")
@@ -95,6 +100,7 @@ class BittoService : Service() {
     }
 
     override fun onDestroy() {
+        running = false
         stopWake()
         try { sr?.destroy() } catch (e: Exception) {}
         tts?.shutdown()
@@ -334,7 +340,7 @@ Abhi ki tareekh aur samay: ${java.util.Date()}.
 Sirf ye JSON do:
 {"emotion":"happy|excited|sad|shy|angry|worried|neutral","display":"Roman Hinglish jawab","speech":"wahi jawab Devanagari Hindi me (English words Latin me hi rehne do)","followup":false,"action":{"type":"none|call|sms|whatsapp|open_app|torch|volume|wifi|lock|url|stop","name":"contact ka naam English letters me","number":"agar user ne number bola","app":"app ka naam English me","value":"torch: on ya off, volume: 0 se 100, url: poora link","message":"sms ya whatsapp ka text"}}
 Agar tumhe user se kuch aur puchna ho to followup true rakho. WhatsApp me message sirf prefill hota hai, user ko send dabana padta hai. Search ya YouTube ke liye type url me search ka link do. Jab user band ho jao bole to type stop do.
-Phone ke andar kaam ke liye ye extra types bhi hain: home, back, recents, close_app (app me app ka naam, khaali ho to abhi khula app band hoga), tap (value me screen par dikhne wale button ya text ka naam), scroll (value: up ya down ya left ya right), type (value me likhne ka text), submit (keyboard ka search ya enter), read_screen (screen ka text padhne ke liye; uske baad tumhe screen ka text milega, tab agla action do aur speech chhota ya khaali rakho). Kai kaam ek saath hon to JSON me "steps" naam ki list do (har step me type aur zaroori fields, aur wait_ms me intezaar milliseconds me, naya app khulne par 2000) aur action none rakho. WhatsApp message ke liye sirf whatsapp action do, service khud confirm karke Send dabati hai. YouTube search ke steps: open_app youtube, tap Search (wait_ms 2500), type, submit (wait_ms 500).
+Phone ke andar kaam ke liye ye extra types bhi hain: home, back, recents, close_app (app me app ka naam, khaali ho to abhi khula app band hoga), tap (value me screen par dikhne wale button ya text ka naam), scroll (value: up ya down ya left ya right), type (value me likhne ka text), submit (keyboard ka search ya enter), read_screen (screen ka text padhne ke liye; uske baad tumhe screen ka text milega, tab agla action do aur speech chhota ya khaali rakho). Kai kaam ek saath hon to JSON me "steps" naam ki list do (har step me type aur zaroori fields, aur wait_ms me intezaar milliseconds me, naya app khulne par 2000) aur action none rakho. WhatsApp message ke liye sirf whatsapp action do, service khud confirm karke Send dabati hai. YouTube me search ke liye hamesha type url do, value me https://www.youtube.com/results?search_query=QUERY (space ki jagah plus), ye seedha YouTube app me khulta hai. Chrome me naya tab: type url, app chrome, value me link (jaise https://www.google.com). Chrome me incognito tab ke steps: open_app chrome, tap (value: More options|Customize and control Google Chrome|Menu, wait_ms 2000), tap (value: New Incognito tab|New incognito tab, wait_ms 1000). tap ki value me | se kai naam de sakte ho, jo mile wahi dabega. Kisi bhi app me chhota kaam ho aur naam pata na ho to pehle read_screen karo, phir screen ke text ke hisaab se tap ya type do. Agar tap ya type fail ho jaye to tumhe screen ka text milega, tab sahi naam se dobara try karo.
 Aur extra types: alarm (value 24 ghante wale "HH:MM" me, message me reminder ka text; abhi ka samay upar diya hai), timer (value seconds me), music (value me gaane ka naam), weather (value me shehar, khaali ho to yahin ka), battery, read_notifications, system (value: screenshot, notifications, quick_settings, power_menu), theme (value: dark, pink, blue, light), voice (value: Leda, Aoede, Zephyr, Kore, Puck me se koi), rename (value: naya naam English letters me). weather, battery aur read_notifications ke baad tumhe info milegi, tab user ko natural tareeke se bata do aur action none rakho. Phone band karne ke steps: system power_menu, phir tap Power off (wait_ms 1500). Wifi ya bluetooth ke liye: system quick_settings, phir tap uska naam (wait_ms 1000)."""
 
     private fun err(m: String): JSONObject {
@@ -483,11 +489,11 @@ Aur extra types: alarm (value 24 ghante wale "HH:MM" me, message me reminder ka 
                         "back" -> { acc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK); next() }
                         "recents" -> { acc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS); next() }
                         "scroll" -> { acc.scroll(v.lowercase()); h.postDelayed({ next() }, 600) }
-                        "tap" -> acc.clickAny(listOf(v), 6) { ok ->
-                            if (ok) h.postDelayed({ next() }, 800) else say("worried", "वो बटन नहीं मिला।", next)
+                        "tap" -> acc.clickAny(v.split("|").map { it.trim() }, 6) { ok ->
+                            if (ok) h.postDelayed({ next() }, 800) else failScreen("tap " + v, acc, next)
                         }
                         "type" -> {
-                            if (acc.typeText(v)) h.postDelayed({ next() }, 500) else say("worried", "लिखने की जगह नहीं मिली।", next)
+                            acc.typeRetry(v, 6) { ok -> if (ok) h.postDelayed({ next() }, 500) else failScreen("type", acc, next) }
                         }
                         "submit" -> { acc.submit(); h.postDelayed({ next() }, 800) }
                         "close_app" -> {
@@ -594,10 +600,13 @@ Aur extra types: alarm (value 24 ghante wale "HH:MM" me, message me reminder ka 
                     }
                 }
                 "url" -> {
-                    go(Intent(Intent.ACTION_VIEW, Uri.parse(a.optString("value"))))
+                    val ui = Intent(Intent.ACTION_VIEW, Uri.parse(a.optString("value")))
+                    val ap = findApp(a.optString("app"))?.component?.packageName
+                    if (ap != null) ui.setPackage(ap)
+                    go(ui)
                     next()
                 }
-                "stop" -> say("happy", "ठीक है, बाय!") { stopSelf() }
+                "stop" -> say("happy", "ठीक है, बाय!") { Prefs.sp(this).edit().putBoolean("auto", false).apply(); stopSelf() }
                 else -> next()
             }
         } catch (e: Exception) {
@@ -610,6 +619,15 @@ Aur extra types: alarm (value 24 ghante wale "HH:MM" me, message me reminder ka 
     private fun feed(info: String, next: () -> Unit) {
         agentSteps++
         if (agentSteps > 6) next() else handle(info + " --- ab user ko natural tareeke se bata do, action none.")
+    }
+
+    private fun failScreen(what: String, acc: BittoAccessibility, next: () -> Unit) {
+        agentSteps++
+        if (agentSteps > 6) {
+            say("worried", "ये काम नहीं हो पाया।", next)
+        } else {
+            handle("[FAIL] " + what + " nahi hua. Screen par ye hai: " + acc.screenText() + " --- sahi naam se dobara try karo, ya kaam na ho paye to maafi maang lo (action none).")
+        }
     }
 
     private fun needAcc(next: () -> Unit) {

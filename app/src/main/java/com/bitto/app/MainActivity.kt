@@ -78,11 +78,19 @@ class MainActivity : Activity() {
         btn("Theme: Light") { pickTheme("light") }
         btn("STOP") {
             stopService(Intent(this, BittoService::class.java))
+            Prefs.sp(this).edit().putBoolean("auto", false).apply()
             status.text = "Band kar diya"
         }
         status = TextView(this)
         status.textSize = 15f
         ll.addView(status)
+        if (intent.getBooleanExtra("auto", false)) {
+            if (ModelStore.ready(this) && Prefs.key(this).isNotBlank() &&
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                try { launch() } catch (e: Exception) {}
+            }
+            sv.postDelayed({ moveTaskToBack(true) }, 1500)
+        }
         applyTheme(sv, ll)
     }
 
@@ -155,6 +163,7 @@ class MainActivity : Activity() {
     }
 
     private fun launch() {
+        Prefs.sp(this).edit().putBoolean("auto", true).apply()
         stopService(Intent(this, BittoService::class.java))
         startForegroundService(Intent(this, BittoService::class.java))
         status.text = "Chalu! Ab bolo: " + Prefs.name(this)
