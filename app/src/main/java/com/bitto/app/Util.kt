@@ -11,6 +11,8 @@ object Prefs {
     fun key(c: Context): String = sp(c).getString("key", "") ?: ""
     fun name(c: Context): String = sp(c).getString("name", "BITTO") ?: "BITTO"
     fun model(c: Context): String = sp(c).getString("gmodel", "gemini-3.5-flash") ?: "gemini-3.5-flash"
+    fun voice(c: Context): String = sp(c).getString("voice", "Leda") ?: "Leda"
+    fun ttsModel(c: Context): String = sp(c).getString("ttsmodel", "gemini-3.1-flash-tts-preview") ?: "gemini-3.1-flash-tts-preview"
 }
 
 object ModelStore {

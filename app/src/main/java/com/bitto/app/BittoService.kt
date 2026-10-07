@@ -9,7 +9,11 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.AudioAttributes
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioTrack
+import android.util.Base64
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -78,6 +82,7 @@ class BittoService : Service() {
         Thread {
             try {
                 model = Model(ModelStore.dir(this).absolutePath)
+                prewarm()
                 h.post { startWake() }
             } catch (e: Exception) {
                 h.post { stopSelf() }
@@ -109,7 +114,91 @@ class BittoService : Service() {
         })
     }
 
+    private val ttsCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+
+    private fun prewarm() {
+        Thread { cloudTts("happy", "जी, बोलिए") }.start()
+    }
+
     private fun say(emotion: String, text: String, done: () -> Unit) {
+        if (text.isBlank() || !Prefs.sp(this).getBoolean("cloudvoice", true) || Prefs.key(this).isBlank()) {
+            sayLocal(emotion, text, done)
+            return
+        }
+        Thread {
+            val pcm = cloudTts(emotion, text)
+            h.post { if (pcm == null) sayLocal(emotion, text, done) else playPcm(pcm, done) }
+        }.start()
+    }
+
+    private fun cloudTts(emotion: String, text: String): ByteArray? {
+        val ck = emotion + "|" + text
+        val hit = ttsCache[ck]
+        if (hit != null) return hit
+        try {
+            val tag = when (emotion) {
+                "happy" -> "happy"
+                "excited" -> "excited"
+                "sad" -> "sad"
+                "shy" -> "softly"
+                "angry" -> "annoyed"
+                "worried" -> "worried"
+                else -> "warmly"
+            }
+            val voice = JSONObject().put("prebuiltVoiceConfig", JSONObject().put("voiceName", Prefs.voice(this)))
+            val body = JSONObject()
+                .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "[" + tag + "] " + text)))))
+                .put("generationConfig", JSONObject()
+                    .put("responseModalities", JSONArray().put("AUDIO"))
+                    .put("speechConfig", JSONObject().put("voiceConfig", voice)))
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/" + Prefs.ttsModel(this) + ":generateContent"
+            val c = URL(url).openConnection() as HttpURLConnection
+            c.requestMethod = "POST"
+            c.connectTimeout = 10000
+            c.readTimeout = 25000
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("x-goog-api-key", Prefs.key(this))
+            c.outputStream.use { it.write(body.toString().toByteArray()) }
+            if (c.responseCode != 200) return null
+            val txt = c.inputStream.bufferedReader().use { it.readText() }
+            val b64 = JSONObject(txt).getJSONArray("candidates").getJSONObject(0).getJSONObject("content")
+                .getJSONArray("parts").getJSONObject(0).getJSONObject("inlineData").getString("data")
+            var pcm = Base64.decode(b64, Base64.DEFAULT)
+            if (pcm.size > 44 && pcm[0].toInt() == 0x52 && pcm[1].toInt() == 0x49) pcm = pcm.copyOfRange(44, pcm.size)
+            if (ttsCache.size > 30) ttsCache.clear()
+            ttsCache[ck] = pcm
+            return pcm
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    private fun playPcm(pcm: ByteArray, done: () -> Unit) {
+        Thread {
+            try {
+                val at = AudioTrack.Builder()
+                    .setAudioAttributes(AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                    .setAudioFormat(AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(24000)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                    .setBufferSizeInBytes(maxOf(pcm.size, 4096))
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+                at.write(pcm, 0, pcm.size)
+                at.play()
+                Thread.sleep(pcm.size / 2 * 1000L / 24000 + 300)
+                at.release()
+            } catch (e: Exception) {
+            }
+            h.post { done() }
+        }.start()
+    }
+
+    private fun sayLocal(emotion: String, text: String, done: () -> Unit) {
         val t = tts
         if (t == null || !ttsReady || text.isBlank()) {
             h.post { done() }
@@ -178,6 +267,7 @@ class BittoService : Service() {
     }
 
     private fun resume() {
+        agentSteps = 0
         busy = false
         h.post { startWake() }
     }
@@ -238,7 +328,8 @@ class BittoService : Service() {
     private fun system(): String = """Tum ${Prefs.name(this)} ho: ek pyaari, sweet, caring ladki jo user ki phone assistant hai. Hinglish me baat karo, chhote natural jawab (1-2 vaakya). Real ladki ki tarah emotions dikhao. Agar user sachchi me puche ki tum insaan ho ya AI, to pyaar se sach bata do ki tum AI ho.
 Sirf ye JSON do:
 {"emotion":"happy|excited|sad|shy|angry|worried|neutral","display":"Roman Hinglish jawab","speech":"wahi jawab Devanagari Hindi me (English words Latin me hi rehne do)","followup":false,"action":{"type":"none|call|sms|whatsapp|open_app|torch|volume|wifi|lock|url|stop","name":"contact ka naam English letters me","number":"agar user ne number bola","app":"app ka naam English me","value":"torch: on ya off, volume: 0 se 100, url: poora link","message":"sms ya whatsapp ka text"}}
-Agar tumhe user se kuch aur puchna ho to followup true rakho. WhatsApp me message sirf prefill hota hai, user ko send dabana padta hai. Search ya YouTube ke liye type url me search ka link do. Jab user band ho jao bole to type stop do."""
+Agar tumhe user se kuch aur puchna ho to followup true rakho. WhatsApp me message sirf prefill hota hai, user ko send dabana padta hai. Search ya YouTube ke liye type url me search ka link do. Jab user band ho jao bole to type stop do.
+Phone ke andar kaam ke liye ye extra types bhi hain: home, back, recents, close_app (app me app ka naam, khaali ho to abhi khula app band hoga), tap (value me screen par dikhne wale button ya text ka naam), scroll (value: up ya down ya left ya right), type (value me likhne ka text), submit (keyboard ka search ya enter), read_screen (screen ka text padhne ke liye; uske baad tumhe screen ka text milega, tab agla action do aur speech chhota ya khaali rakho). Kai kaam ek saath hon to JSON me "steps" naam ki list do (har step me type aur zaroori fields, aur wait_ms me intezaar milliseconds me, naya app khulne par 2000) aur action none rakho. WhatsApp message ke liye sirf whatsapp action do, service khud confirm karke Send dabati hai. YouTube search ke steps: open_app youtube, tap Search (wait_ms 2500), type, submit (wait_ms 500)."""
 
     private fun err(m: String): JSONObject {
         try { if (history.length() > 0) history.remove(history.length() - 1) } catch (e: Exception) {}
@@ -292,7 +383,7 @@ Agar tumhe user se kuch aur puchna ho to followup true rakho. WhatsApp me messag
         val a = res.optJSONObject("action") ?: JSONObject()
         val follow = res.optBoolean("followup", false)
         say(res.optString("emotion", "neutral"), speech) {
-            perform(a) {
+            runActions(res) {
                 if (follow) {
                     listenOnce { t -> if (t == null) resume() else handle(t) }
                 } else {
@@ -328,7 +419,16 @@ Agar tumhe user se kuch aur puchna ho to followup true rakho. WhatsApp me messag
                             }
                         }
                         else -> {
-                            go(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + n.removePrefix("+") + "?text=" + Uri.encode(a.optString("message")))))
+                            confirm(nm + " को WhatsApp भेज दूँ?") {
+                                if (it) {
+                                    go(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/" + n.removePrefix("+") + "?text=" + Uri.encode(a.optString("message")))))
+                                    val acc = BittoAccessibility.instance
+                                    if (acc == null) next() else h.postDelayed({ acc.clickAny(listOf("Send", "भेजें"), 10) { next() } }, 3000)
+                                } else {
+                                    next()
+                                }
+                            }
+                            return
                             next()
                         }
                     }
@@ -365,6 +465,42 @@ Agar tumhe user se kuch aur puchna ho to followup true rakho. WhatsApp me messag
                         next()
                     }
                 }
+                "home", "back", "recents", "scroll", "tap", "type", "submit", "close_app", "read_screen" -> {
+                    val acc = BittoAccessibility.instance
+                    if (acc == null) {
+                        needAcc(next)
+                        return
+                    }
+                    val v = a.optString("value")
+                    when (t) {
+                        "home" -> { acc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME); next() }
+                        "back" -> { acc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK); next() }
+                        "recents" -> { acc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS); next() }
+                        "scroll" -> { acc.scroll(v.lowercase()); h.postDelayed({ next() }, 600) }
+                        "tap" -> acc.clickAny(listOf(v), 6) { ok ->
+                            if (ok) h.postDelayed({ next() }, 800) else say("worried", "वो बटन नहीं मिला।", next)
+                        }
+                        "type" -> {
+                            if (acc.typeText(v)) h.postDelayed({ next() }, 500) else say("worried", "लिखने की जगह नहीं मिली।", next)
+                        }
+                        "submit" -> { acc.submit(); h.postDelayed({ next() }, 800) }
+                        "close_app" -> {
+                            val pkg = findApp(a.optString("app"))?.component?.packageName ?: acc.currentPackage()
+                            if (pkg == null || pkg == packageName) {
+                                say("worried", "कौन सा ऐप बंद करूँ?", next)
+                            } else {
+                                acc.forceStop(pkg) { ok -> if (ok) next() else say("worried", "ऐप बंद नहीं हो पाया।", next) }
+                            }
+                        }
+                        else -> {
+                            h.postDelayed({
+                                val s = acc.screenText()
+                                agentSteps++
+                                if (agentSteps > 6) next() else handle("[SCREEN] " + s + " --- ab agla action do, ya kaam ho gaya to action none.")
+                            }, 900)
+                        }
+                    }
+                }
                 "url" -> {
                     go(Intent(Intent.ACTION_VIEW, Uri.parse(a.optString("value"))))
                     next()
@@ -375,6 +511,36 @@ Agar tumhe user se kuch aur puchna ho to followup true rakho. WhatsApp me messag
         } catch (e: Exception) {
             say("worried", "ये काम नहीं हो पाया।", next)
         }
+    }
+
+    private var agentSteps = 0
+
+    private fun needAcc(next: () -> Unit) {
+        say("worried", "पहले एक्सेसिबिलिटी ऑन करो।", next)
+    }
+
+    private fun runActions(res: JSONObject, done: () -> Unit) {
+        val list = JSONArray()
+        val arr = res.optJSONArray("steps")
+        if (arr != null) {
+            for (i in 0 until arr.length()) list.put(arr.get(i))
+        }
+        val single = res.optJSONObject("action")
+        if (list.length() == 0 && single != null) list.put(single)
+        runAt(list, 0, done)
+    }
+
+    private fun runAt(list: JSONArray, i: Int, done: () -> Unit) {
+        if (i >= list.length()) {
+            done()
+            return
+        }
+        val a = list.optJSONObject(i)
+        if (a == null) {
+            runAt(list, i + 1, done)
+            return
+        }
+        h.postDelayed({ perform(a) { runAt(list, i + 1, done) } }, a.optLong("wait_ms", 0L))
     }
 
     private fun confirm(q: String, r: (Boolean) -> Unit) {

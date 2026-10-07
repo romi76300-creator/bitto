@@ -19,6 +19,7 @@ class MainActivity : Activity() {
     private lateinit var keyBox: EditText
     private lateinit var nameBox: EditText
     private lateinit var modelBox: EditText
+    private lateinit var voiceBox: EditText
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -53,6 +54,7 @@ class MainActivity : Activity() {
         keyBox = box("Gemini API key", Prefs.key(this))
         nameBox = box("Assistant ka naam (wake word)", Prefs.name(this))
         modelBox = box("Gemini model", Prefs.model(this))
+        voiceBox = box("Awaaz (Leda, Aoede, Zephyr, Kore)", Prefs.voice(this))
         btn("1. Permissions do") { requestPermissions(perms(), 1) }
         btn("2. Accessibility ON karo (lock ke liye)") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -92,6 +94,7 @@ class MainActivity : Activity() {
             .putString("key", keyBox.text.toString().trim())
             .putString("name", nameBox.text.toString().trim().ifEmpty { "BITTO" })
             .putString("gmodel", modelBox.text.toString().trim().ifEmpty { "gemini-3.5-flash" })
+            .putString("voice", voiceBox.text.toString().trim().ifEmpty { "Leda" })
             .apply()
     }
 
