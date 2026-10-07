@@ -16,6 +16,10 @@ import android.media.AudioTrack
 import android.util.Base64
 import android.net.Uri
 import android.os.Build
+import android.os.BatteryManager
+import android.app.SearchManager
+import android.provider.AlarmClock
+import android.provider.MediaStore
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -326,10 +330,12 @@ class BittoService : Service() {
 
     // ---------- Dimag (Gemini) ----------
     private fun system(): String = """Tum ${Prefs.name(this)} ho: ek pyaari, sweet, caring ladki jo user ki phone assistant hai. Hinglish me baat karo, chhote natural jawab (1-2 vaakya). Real ladki ki tarah emotions dikhao. Agar user sachchi me puche ki tum insaan ho ya AI, to pyaar se sach bata do ki tum AI ho.
+Abhi ki tareekh aur samay: ${java.util.Date()}.
 Sirf ye JSON do:
 {"emotion":"happy|excited|sad|shy|angry|worried|neutral","display":"Roman Hinglish jawab","speech":"wahi jawab Devanagari Hindi me (English words Latin me hi rehne do)","followup":false,"action":{"type":"none|call|sms|whatsapp|open_app|torch|volume|wifi|lock|url|stop","name":"contact ka naam English letters me","number":"agar user ne number bola","app":"app ka naam English me","value":"torch: on ya off, volume: 0 se 100, url: poora link","message":"sms ya whatsapp ka text"}}
 Agar tumhe user se kuch aur puchna ho to followup true rakho. WhatsApp me message sirf prefill hota hai, user ko send dabana padta hai. Search ya YouTube ke liye type url me search ka link do. Jab user band ho jao bole to type stop do.
-Phone ke andar kaam ke liye ye extra types bhi hain: home, back, recents, close_app (app me app ka naam, khaali ho to abhi khula app band hoga), tap (value me screen par dikhne wale button ya text ka naam), scroll (value: up ya down ya left ya right), type (value me likhne ka text), submit (keyboard ka search ya enter), read_screen (screen ka text padhne ke liye; uske baad tumhe screen ka text milega, tab agla action do aur speech chhota ya khaali rakho). Kai kaam ek saath hon to JSON me "steps" naam ki list do (har step me type aur zaroori fields, aur wait_ms me intezaar milliseconds me, naya app khulne par 2000) aur action none rakho. WhatsApp message ke liye sirf whatsapp action do, service khud confirm karke Send dabati hai. YouTube search ke steps: open_app youtube, tap Search (wait_ms 2500), type, submit (wait_ms 500)."""
+Phone ke andar kaam ke liye ye extra types bhi hain: home, back, recents, close_app (app me app ka naam, khaali ho to abhi khula app band hoga), tap (value me screen par dikhne wale button ya text ka naam), scroll (value: up ya down ya left ya right), type (value me likhne ka text), submit (keyboard ka search ya enter), read_screen (screen ka text padhne ke liye; uske baad tumhe screen ka text milega, tab agla action do aur speech chhota ya khaali rakho). Kai kaam ek saath hon to JSON me "steps" naam ki list do (har step me type aur zaroori fields, aur wait_ms me intezaar milliseconds me, naya app khulne par 2000) aur action none rakho. WhatsApp message ke liye sirf whatsapp action do, service khud confirm karke Send dabati hai. YouTube search ke steps: open_app youtube, tap Search (wait_ms 2500), type, submit (wait_ms 500).
+Aur extra types: alarm (value 24 ghante wale "HH:MM" me, message me reminder ka text; abhi ka samay upar diya hai), timer (value seconds me), music (value me gaane ka naam), weather (value me shehar, khaali ho to yahin ka), battery, read_notifications, system (value: screenshot, notifications, quick_settings, power_menu), theme (value: dark, pink, blue, light), voice (value: Leda, Aoede, Zephyr, Kore, Puck me se koi), rename (value: naya naam English letters me). weather, battery aur read_notifications ke baad tumhe info milegi, tab user ko natural tareeke se bata do aur action none rakho. Phone band karne ke steps: system power_menu, phir tap Power off (wait_ms 1500). Wifi ya bluetooth ke liye: system quick_settings, phir tap uska naam (wait_ms 1000)."""
 
     private fun err(m: String): JSONObject {
         try { if (history.length() > 0) history.remove(history.length() - 1) } catch (e: Exception) {}
@@ -501,6 +507,92 @@ Phone ke andar kaam ke liye ye extra types bhi hain: home, back, recents, close_
                         }
                     }
                 }
+                "alarm", "timer", "music", "weather", "battery", "read_notifications", "system", "theme", "voice", "rename" -> {
+                    val v = a.optString("value")
+                    when (t) {
+                        "alarm" -> {
+                            val p = v.split(":")
+                            val i = Intent(AlarmClock.ACTION_SET_ALARM)
+                            i.putExtra(AlarmClock.EXTRA_HOUR, p[0].trim().toInt())
+                            i.putExtra(AlarmClock.EXTRA_MINUTES, p[1].trim().toInt())
+                            i.putExtra(AlarmClock.EXTRA_MESSAGE, a.optString("message"))
+                            i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                            go(i)
+                            next()
+                        }
+                        "timer" -> {
+                            val i = Intent(AlarmClock.ACTION_SET_TIMER)
+                            i.putExtra(AlarmClock.EXTRA_LENGTH, v.trim().toDouble().toInt())
+                            i.putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                            go(i)
+                            next()
+                        }
+                        "music" -> {
+                            val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+                            i.putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+                            i.putExtra(SearchManager.QUERY, v)
+                            try {
+                                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                startActivity(i)
+                            } catch (e: Exception) {
+                                go(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(v))))
+                            }
+                            next()
+                        }
+                        "weather" -> {
+                            Thread {
+                                val w = try { URL("https://wttr.in/" + Uri.encode(v) + "?format=3").readText() } catch (e: Exception) { "mausam nahi mila" }
+                                h.post { feed("[MAUSAM] " + w, next) }
+                            }.start()
+                        }
+                        "battery" -> {
+                            val bm = getSystemService(BatteryManager::class.java)
+                            val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                            feed("[BATTERY] " + pct + " percent" + (if (bm.isCharging) ", charging" else ""), next)
+                        }
+                        "read_notifications" -> {
+                            val nl = BittoNotifications.instance
+                            if (nl == null) {
+                                say("worried", "पहले नोटिफिकेशन की इजाज़त दो।", next)
+                            } else {
+                                feed("[NOTIFICATIONS] " + nl.recent().ifBlank { "koi nahi" }, next)
+                            }
+                        }
+                        "system" -> {
+                            val acc = BittoAccessibility.instance
+                            if (acc == null) {
+                                needAcc(next)
+                            } else if (v == "power_menu") {
+                                confirm("फोन का पावर मेन्यू खोल दूँ?") {
+                                    if (it) acc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_POWER_DIALOG)
+                                    next()
+                                }
+                            } else {
+                                val g = when (v) {
+                                    "screenshot" -> AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT
+                                    "notifications" -> AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
+                                    else -> AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS
+                                }
+                                acc.performGlobalAction(g)
+                                h.postDelayed({ next() }, 700)
+                            }
+                        }
+                        "theme" -> {
+                            Prefs.sp(this).edit().putString("theme", v.lowercase()).apply()
+                            go(Intent(this, MainActivity::class.java))
+                            say("happy", "थीम बदल दी!", next)
+                        }
+                        "voice" -> {
+                            Prefs.sp(this).edit().putString("voice", v).apply()
+                            ttsCache.clear()
+                            say("happy", "लो, अब मेरी आवाज़ बदल गई।", next)
+                        }
+                        "rename" -> {
+                            Prefs.sp(this).edit().putString("name", v).apply()
+                            say("happy", "ठीक है, अब से मेरा नाम " + v + " है।", next)
+                        }
+                    }
+                }
                 "url" -> {
                     go(Intent(Intent.ACTION_VIEW, Uri.parse(a.optString("value"))))
                     next()
@@ -514,6 +606,11 @@ Phone ke andar kaam ke liye ye extra types bhi hain: home, back, recents, close_
     }
 
     private var agentSteps = 0
+
+    private fun feed(info: String, next: () -> Unit) {
+        agentSteps++
+        if (agentSteps > 6) next() else handle(info + " --- ab user ko natural tareeke se bata do, action none.")
+    }
 
     private fun needAcc(next: () -> Unit) {
         say("worried", "पहले एक्सेसिबिलिटी ऑन करो।", next)

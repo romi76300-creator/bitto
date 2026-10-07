@@ -65,10 +65,17 @@ class MainActivity : Activity() {
         btn("4. Battery: Unrestricted karo") {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + packageName)))
         }
+        btn("6. Notifications padhne ki permission") {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
         btn("5. SAVE + START") {
             save()
             start()
         }
+        btn("Theme: Dark") { pickTheme("dark") }
+        btn("Theme: Pink") { pickTheme("pink") }
+        btn("Theme: Blue") { pickTheme("blue") }
+        btn("Theme: Light") { pickTheme("light") }
         btn("STOP") {
             stopService(Intent(this, BittoService::class.java))
             status.text = "Band kar diya"
@@ -76,6 +83,31 @@ class MainActivity : Activity() {
         status = TextView(this)
         status.textSize = 15f
         ll.addView(status)
+        applyTheme(sv, ll)
+    }
+
+    private fun pickTheme(n: String) {
+        Prefs.sp(this).edit().putString("theme", n).apply()
+        recreate()
+    }
+
+    private fun applyTheme(sv: ScrollView, ll: LinearLayout) {
+        val th = Prefs.sp(this).getString("theme", "light") ?: "light"
+        val c = when (th) {
+            "dark" -> Triple(0xFF121212.toInt(), 0xFFFFFFFF.toInt(), 0xFF2A2A2A.toInt())
+            "pink" -> Triple(0xFFFFE4EC.toInt(), 0xFF5A1030.toInt(), 0xFFFF8FB5.toInt())
+            "blue" -> Triple(0xFFE3F2FD.toInt(), 0xFF0D2A4A.toInt(), 0xFF64B5F6.toInt())
+            else -> Triple(0xFFFAFAFA.toInt(), 0xFF000000.toInt(), 0xFFD6D6D6.toInt())
+        }
+        sv.setBackgroundColor(c.first)
+        for (i in 0 until ll.childCount) {
+            val v = ll.getChildAt(i)
+            if (v is TextView) {
+                v.setTextColor(c.second)
+                v.setHintTextColor(c.second and 0x99FFFFFF.toInt())
+            }
+            if (v is Button) v.setBackgroundColor(c.third)
+        }
     }
 
     private fun perms(): Array<String> {
